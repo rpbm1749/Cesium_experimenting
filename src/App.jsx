@@ -255,9 +255,15 @@ const CesiumMap = () => {
 
         const pickedHits = [];
 
-        // sample grid (every 10px for better coverage)
-        for (let x = minX; x <= maxX; x += 10) {
-          for (let y = minY; y <= maxY; y += 10) {
+        // 🔥 adaptive sampling step (KEY OPTIMIZATION)
+        const rectAreaPx = (maxX - minX) * (maxY - minY);
+        const step =
+          rectAreaPx > 400_000 ? 30 :
+          rectAreaPx > 200_000 ? 20 :
+          10;
+
+        for (let x = minX; x <= maxX; x += step) {
+          for (let y = minY; y <= maxY; y += step) {
             const picked = viewer.scene.pick({ x, y });
 
             if (
@@ -267,11 +273,16 @@ const CesiumMap = () => {
               pickedHits.push({ feature: picked, x, y });
             }
           }
-        }
+}
 
         // 🔴 RECTANGLE DELETE
         if (rectDeleteModeRef.current) {
+          const seen = new WeakSet(); // 🔥 prevents repeat work
+
           pickedHits.forEach(({ feature, x, y }) => {
+            if (seen.has(feature)) return;
+            seen.add(feature);
+
             if (feature.show !== false) {
               feature.show = false;
 
@@ -286,18 +297,42 @@ const CesiumMap = () => {
           });
         }
 
-
         // 🟢 RECTANGLE RESTORE
         if (rectRestoreModeRef.current) {
-          pickedHits.forEach(({ feature }) => {
-            deletedFeaturesRef.current.forEach((item) => {
-              if (item.feature === feature) {
-                item.feature.show = true;
-                deletedFeaturesRef.current.delete(item);
-              }
-            });
+          const restored = [];
+
+          deletedFeaturesRef.current.forEach((item) => {
+            const cartesian = Cesium.Cartesian3.fromRadians(
+              item.position.longitude,
+              item.position.latitude,
+              item.position.height
+            );
+
+            const screenPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(
+              viewer.scene,
+              cartesian
+            );
+
+            if (!screenPos) return;
+
+            if (
+              screenPos.x >= minX &&
+              screenPos.x <= maxX &&
+              screenPos.y >= minY &&
+              screenPos.y <= maxY
+            ) {
+              item.feature.show = true;
+              restored.push(item);
+            }
           });
+
+          restored.forEach((item) =>
+            deletedFeaturesRef.current.delete(item)
+          );
+
+          console.log(`♻️ Rectangle restored ${restored.length} buildings`);
         }
+
 
         dragStart = null;
         dragEnd = null;
