@@ -14,6 +14,14 @@ const CesiumMap = () => {
     delRef.current = del;
   }, [del]);
 
+  const [restoreMode, setRestoreMode] = useState(false);
+
+  const restoreModeRef = useRef(false);
+  const deletedFeaturesRef = useRef(new Set());
+  useEffect(() => {
+    restoreModeRef.current = restoreMode;
+  }, [restoreMode]);
+
   useEffect(() => {
     window.CESIUM_BASE_URL = "https://cdnjs.cloudflare.com/ajax/libs/cesium/1.95.0/";
     const link = document.createElement("link");
@@ -79,6 +87,42 @@ const CesiumMap = () => {
         );
 
         handler.setInputAction((movement) => {
+        const Cesium = window.Cesium;
+
+        // 🔵 RESTORE MODE — DOES NOT REQUIRE PICKED BUILDING
+        if (restoreModeRef.current) {
+          const cartesian = viewer.scene.pickPosition(movement.position);
+          if (!Cesium.defined(cartesian)) {
+            console.warn("No depth at click position");
+            return;
+          }
+
+          const clicked = Cesium.Cartographic.fromCartesian(cartesian);
+
+          let closest = null;
+          let minDist = Infinity;
+
+          deletedFeaturesRef.current.forEach((item) => {
+            const dLat = item.position.latitude - clicked.latitude;
+            const dLon = item.position.longitude - clicked.longitude;
+            const dist = dLat * dLat + dLon * dLon;
+
+            if (dist < minDist) {
+              minDist = dist;
+              closest = item;
+            }
+          });
+
+          if (closest) {
+            closest.feature.show = true;
+            deletedFeaturesRef.current.delete(closest);
+            console.log("♻️ Restored building");
+          }
+
+          return;
+        }
+
+        // ⬇️ BELOW THIS POINT WE NEED A BUILDING
         const pickedObject = viewer.scene.pick(movement.position);
 
         if (
@@ -90,11 +134,20 @@ const CesiumMap = () => {
 
         // 🔴 DELETE MODE
         if (delRef.current) {
+          const cartesian = viewer.scene.pickPosition(movement.position);
+          if (!Cesium.defined(cartesian)) return;
+
           pickedObject.show = false;
+          deletedFeaturesRef.current.add({
+            feature: pickedObject,
+            position: Cesium.Cartographic.fromCartesian(cartesian),
+          });
+
+          console.log("🗑️ Building deleted");
           return;
         }
 
-        // 🟡 NORMAL MODE (select + highlight)
+        // 🟡 NORMAL SELECT MODE
         if (selectedFeature && selectedFeature !== pickedObject) {
           selectedFeature.color = originalColor;
         }
@@ -104,6 +157,7 @@ const CesiumMap = () => {
         pickedObject.color = Cesium.Color.YELLOW;
 
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
 
 
         // ✅ Zoom to Bengaluru with safe altitude
@@ -135,6 +189,13 @@ const CesiumMap = () => {
       document.body.removeChild(script);
     };
   }, []);
+
+  const restoreAll = () => {
+    deletedFeaturesRef.current.forEach((item) => {
+      item.feature.show = true;
+    });
+    deletedFeaturesRef.current.clear();
+  };
 
   const flyToLocation = (lon, lat, height = 3000) => {
     if (!viewerRef.current || !window.Cesium) return;
@@ -194,10 +255,28 @@ const CesiumMap = () => {
         </button>
 
         <button
-          onClick={() => setDel(!del)}
-          className="px-4 py-2 bg-white rounded shadow flex items-center gap-2"
+          onClick={() => {
+            setDel(!del);
+            setRestoreMode(false);
+          }}
         >
           Delete Mode: {del ? "On" : "Off"}
+        </button>
+
+        <button
+          onClick={() => {
+            setRestoreMode(!restoreMode);
+            setDel(false);
+          }}
+        >
+          Restore Mode: {restoreMode ? "On" : "Off"}
+        </button>
+
+        <button
+          onClick={restoreAll}
+          className="px-4 py-2 bg-white rounded shadow flex items-center gap-2"
+        >
+          Restore All
         </button>
       </div>
     </div>
