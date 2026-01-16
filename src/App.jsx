@@ -9,7 +9,7 @@ const CesiumMap = () => {
   const [error, setError] = useState(null);
   const [del, setDel] = useState(false);
   const delRef = useRef(false);
-
+  const cesiumReadyRef = useRef(false);
   useEffect(() => {
     delRef.current = del;
   }, [del]);
@@ -18,9 +18,54 @@ const CesiumMap = () => {
 
   const restoreModeRef = useRef(false);
   const deletedFeaturesRef = useRef(new Set());
+
   useEffect(() => {
     restoreModeRef.current = restoreMode;
   }, [restoreMode]);
+
+  const disableCamera = (viewer) => {
+    const c = viewer.scene.screenSpaceCameraController;
+    c.enableRotate = false;
+    c.enableTranslate = false;
+    c.enableZoom = false;
+    c.enableTilt = false;
+    c.enableLook = false;
+  };
+
+  const enableCamera = (viewer) => {
+    const c = viewer.scene.screenSpaceCameraController;
+    c.enableRotate = true;
+    c.enableTranslate = true;
+    c.enableZoom = true;
+    c.enableTilt = true;
+    c.enableLook = true;
+  };
+
+  const [rectDeleteMode, setRectDeleteMode] = useState(false);
+  const [rectRestoreMode, setRectRestoreMode] = useState(false);
+
+  const rectDeleteModeRef = useRef(false);
+  const rectRestoreModeRef = useRef(false);
+
+  useEffect(() => {
+    rectDeleteModeRef.current = rectDeleteMode;
+  }, [rectDeleteMode]);
+
+  useEffect(() => {
+    rectRestoreModeRef.current = rectRestoreMode;
+  }, [rectRestoreMode]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !cesiumReadyRef.current) return;
+    if (rectDeleteMode || rectRestoreMode) {
+      disableCamera(viewer);
+    } else {
+      enableCamera(viewer);
+    }
+  }, [rectDeleteMode, rectRestoreMode]);
+
+  const [dragRect, setDragRect] = useState(null);
 
   useEffect(() => {
     window.CESIUM_BASE_URL = "https://cdnjs.cloudflare.com/ajax/libs/cesium/1.95.0/";
@@ -69,6 +114,7 @@ const CesiumMap = () => {
         viewer.scene.backgroundColor = Cesium.Color.DARK_BLUE;
 
         viewerRef.current = viewer;
+        cesiumReadyRef.current = true;
 
         // ✅ Add OSM 3D buildings
         try {
@@ -88,6 +134,9 @@ const CesiumMap = () => {
 
         handler.setInputAction((movement) => {
         const Cesium = window.Cesium;
+        if (rectDeleteModeRef.current || rectRestoreModeRef.current) {
+          return;
+        }
 
         // 🔵 RESTORE MODE — DOES NOT REQUIRE PICKED BUILDING
         if (restoreModeRef.current) {
@@ -157,6 +206,104 @@ const CesiumMap = () => {
         pickedObject.color = Cesium.Color.YELLOW;
 
       }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+
+      let dragStart = null;
+      let dragEnd = null;
+
+      handler.setInputAction((movement) => {
+      if (!rectDeleteModeRef.current && !rectRestoreModeRef.current) return;
+
+      dragStart = {
+        x: movement.position.x,
+        y: movement.position.y,
+      };
+
+      setDragRect({
+        left: dragStart.x,
+        top: dragStart.y,
+        width: 0,
+        height: 0,
+      });
+    }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
+
+    handler.setInputAction((movement) => {
+      if (!dragStart) return;
+
+      const end = movement.endPosition;
+
+      const left = Math.min(dragStart.x, end.x);
+      const top = Math.min(dragStart.y, end.y);
+      const width = Math.abs(end.x - dragStart.x);
+      const height = Math.abs(end.y - dragStart.y);
+
+      setDragRect({ left, top, width, height });
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+      handler.setInputAction((movement) => {
+        if (!dragStart) return;
+
+        dragEnd = {
+          x: movement.position.x,
+          y: movement.position.y,
+        };
+
+        const minX = Math.min(dragStart.x, dragEnd.x);
+        const maxX = Math.max(dragStart.x, dragEnd.x);
+        const minY = Math.min(dragStart.y, dragEnd.y);
+        const maxY = Math.max(dragStart.y, dragEnd.y);
+
+        const pickedHits = [];
+
+        // sample grid (every 10px for better coverage)
+        for (let x = minX; x <= maxX; x += 10) {
+          for (let y = minY; y <= maxY; y += 10) {
+            const picked = viewer.scene.pick({ x, y });
+
+            if (
+              Cesium.defined(picked) &&
+              picked instanceof Cesium.Cesium3DTileFeature
+            ) {
+              pickedHits.push({ feature: picked, x, y });
+            }
+          }
+        }
+
+        // 🔴 RECTANGLE DELETE
+        if (rectDeleteModeRef.current) {
+          pickedHits.forEach(({ feature, x, y }) => {
+            if (feature.show !== false) {
+              feature.show = false;
+
+              const cartesian = viewer.scene.pickPosition({ x, y });
+              if (Cesium.defined(cartesian)) {
+                deletedFeaturesRef.current.add({
+                  feature,
+                  position: Cesium.Cartographic.fromCartesian(cartesian),
+                });
+              }
+            }
+          });
+        }
+
+
+        // 🟢 RECTANGLE RESTORE
+        if (rectRestoreModeRef.current) {
+          pickedHits.forEach(({ feature }) => {
+            deletedFeaturesRef.current.forEach((item) => {
+              if (item.feature === feature) {
+                item.feature.show = true;
+                deletedFeaturesRef.current.delete(item);
+              }
+            });
+          });
+        }
+
+        dragStart = null;
+        dragEnd = null;
+        setDragRect(null);
+
+      }, Cesium.ScreenSpaceEventType.LEFT_UP);
 
 
 
@@ -235,6 +382,22 @@ const CesiumMap = () => {
         </div>
       )}
 
+      {dragRect && (
+        <div
+          style={{
+            position: "absolute",
+            left: dragRect.left,
+            top: dragRect.top,
+            width: dragRect.width,
+            height: dragRect.height,
+            border: "2px dashed #00ffff",
+            backgroundColor: "rgba(0, 255, 255, 0.15)",
+            pointerEvents: "none",
+            zIndex: 1000,
+          }}
+        />
+      )}
+
       <div ref={cesiumContainer} className="w-full h-full" />
 
       <div className="absolute top-4 left-4 z-10 space-y-2">
@@ -277,6 +440,27 @@ const CesiumMap = () => {
           className="px-4 py-2 bg-white rounded shadow flex items-center gap-2"
         >
           Restore All
+        </button>
+        <button
+          onClick={() => {
+            setRectDeleteMode(!rectDeleteMode);
+            setRectRestoreMode(false);
+            setDel(false);
+            setRestoreMode(false);
+          }}
+        >
+          Rectangle Delete: {rectDeleteMode ? "On" : "Off"}
+        </button>
+
+        <button
+          onClick={() => {
+            setRectRestoreMode(!rectRestoreMode);
+            setRectDeleteMode(false);
+            setDel(false);
+            setRestoreMode(false);
+          }}
+        >
+          Rectangle Restore: {rectRestoreMode ? "On" : "Off"}
         </button>
       </div>
     </div>
