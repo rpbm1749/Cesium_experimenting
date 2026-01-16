@@ -1,7 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Globe, MapPin, Search, Home, AlertCircle } from "lucide-react";
-import dotenv from 'dotenv';
-dotenv.config();
 
 const CesiumMap = () => {
   const cesiumContainer = useRef(null);
@@ -37,8 +35,7 @@ const CesiumMap = () => {
       try {
         const Cesium = window.Cesium;
 
-        Cesium.Ion.defaultAccessToken =
-          process.env.REACT_APP_CESIUM_ION_TOKEN;
+        Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_ION_TOKEN;
 
         // Create viewer with minimal config first
         const viewer = new Cesium.Viewer(cesiumContainer.current, {
