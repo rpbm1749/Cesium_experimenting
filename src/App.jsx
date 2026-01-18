@@ -1,74 +1,139 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Globe, MapPin, Search, Home, AlertCircle } from "lucide-react";
+import { Globe, AlertCircle } from "lucide-react";
 
 const CesiumMap = () => {
   const cesiumContainer = useRef(null);
   const viewerRef = useRef(null);
-  const [searchQuery, setSearchQuery] = useState("");
+  const handlerRef = useRef(null);
+  const previewRectRef = useRef(null);
+  const areaDragStartRef = useRef(null);
+  const [operation, setOperation] = useState(null); 
+  // "DELETE" | "RESTORE" | null
+  const [deletedCount, setDeletedCount] = useState(0);
+
+  const [method, setMethod] = useState(null);     
+  // "CLICK" | "AREA" | null
+
+  const operationRef = useRef(null);
+  const methodRef = useRef(null);
+
+  useEffect(() => {
+    operationRef.current = operation;
+  }, [operation]);
+
+  useEffect(() => {
+    methodRef.current = method;
+  }, [method]);
+
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [del, setDel] = useState(false);
-  const delRef = useRef(false);
-  const cesiumReadyRef = useRef(false);
-  useEffect(() => {
-    delRef.current = del;
-  }, [del]);
 
-  const [restoreMode, setRestoreMode] = useState(false);
+  // MODES
+  const [mode, setMode] = useState("VIEW");
+  const modeRef = useRef(mode);
 
-  const restoreModeRef = useRef(false);
+  // SELECTION
+  const [selectedBBox, setSelectedBBox] = useState(null);
+  const selectedBBoxRef = useRef(selectedBBox);
+  const selectionEntityRef = useRef(null);
+  const isSelectingRef = useRef(false);
+  const dragStartRef = useRef(null);
+
+  // DELETE
+  const [deleteMode, setDeleteMode] = useState(false);
   const deletedFeaturesRef = useRef(new Set());
 
+  // PREVIEW
+  const previewEntityRef = useRef(null);
+
+  // Update refs when state changes
   useEffect(() => {
-    restoreModeRef.current = restoreMode;
-  }, [restoreMode]);
-
-  const disableCamera = (viewer) => {
-    const c = viewer.scene.screenSpaceCameraController;
-    c.enableRotate = false;
-    c.enableTranslate = false;
-    c.enableZoom = false;
-    c.enableTilt = false;
-    c.enableLook = false;
-  };
-
-  const enableCamera = (viewer) => {
-    const c = viewer.scene.screenSpaceCameraController;
-    c.enableRotate = true;
-    c.enableTranslate = true;
-    c.enableZoom = true;
-    c.enableTilt = true;
-    c.enableLook = true;
-  };
-
-  const [rectDeleteMode, setRectDeleteMode] = useState(false);
-  const [rectRestoreMode, setRectRestoreMode] = useState(false);
-
-  const rectDeleteModeRef = useRef(false);
-  const rectRestoreModeRef = useRef(false);
+    modeRef.current = mode;
+  }, [mode]);
 
   useEffect(() => {
-    rectDeleteModeRef.current = rectDeleteMode;
-  }, [rectDeleteMode]);
+    selectedBBoxRef.current = selectedBBox;
+  }, [selectedBBox]);
 
-  useEffect(() => {
-    rectRestoreModeRef.current = rectRestoreMode;
-  }, [rectRestoreMode]);
+  // ---------- HELPERS ----------
+  const clearSelection = () => {
+    setSelectedBBox(null);
+    isSelectingRef.current = false;
+    dragStartRef.current = null;
 
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer || !cesiumReadyRef.current) return;
-    if (rectDeleteMode || rectRestoreMode) {
-      disableCamera(viewer);
-    } else {
-      enableCamera(viewer);
+    if (selectionEntityRef.current && viewerRef.current) {
+      viewerRef.current.entities.remove(selectionEntityRef.current);
+      selectionEntityRef.current = null;
     }
-  }, [rectDeleteMode, rectRestoreMode]);
 
-  const [dragRect, setDragRect] = useState(null);
+    if (previewEntityRef.current && viewerRef.current) {
+      viewerRef.current.entities.remove(previewEntityRef.current);
+      previewEntityRef.current = null;
+    }
 
+    // Restore full camera control
+    if (viewerRef.current) {
+      const controller = viewerRef.current.scene.screenSpaceCameraController;
+      controller.enableInputs = true;
+      controller.enableTranslate = true;
+      controller.enableRotate = true;
+      controller.enableTilt = true;
+      controller.enableLook = true;
+      controller.enableZoom = true;
+    }
+    
+    setMode("VIEW");
+  };
+
+  const isInsideBBox = (lat, lon, bbox) => {
+    if (!bbox) return false;
+    return (
+      lat >= bbox.minLat &&
+      lat <= bbox.maxLat &&
+      lon >= bbox.minLon &&
+      lon <= bbox.maxLon
+    );
+  };
+
+  const createGroundRectanglePrimitive = (viewer, bbox) => {
+    const Cesium = window.Cesium;
+
+    const positions = Cesium.Cartesian3.fromDegreesArray([
+      bbox.minLon, bbox.minLat,
+      bbox.maxLon, bbox.minLat,
+      bbox.maxLon, bbox.maxLat,
+      bbox.minLon, bbox.maxLat,
+      bbox.minLon, bbox.minLat,
+    ]);
+
+    const geometry = new Cesium.GroundPolylineGeometry({
+      positions,
+      width: 4,
+    });
+
+    const instance = new Cesium.GeometryInstance({
+      geometry,
+    });
+
+    const primitive = new Cesium.GroundPolylinePrimitive({
+      geometryInstances: instance,
+      appearance: new Cesium.PolylineMaterialAppearance({
+        material: Cesium.Material.fromType("Color", {
+          color: Cesium.Color.LIME,
+        }),
+      }),
+    });
+
+    viewer.scene.primitives.add(primitive);
+    return primitive;
+  };
+
+
+  // ---------- INIT CESIUM ----------
   useEffect(() => {
-    window.CESIUM_BASE_URL = "https://cdnjs.cloudflare.com/ajax/libs/cesium/1.95.0/";
+    window.CESIUM_BASE_URL =
+      "https://cdnjs.cloudflare.com/ajax/libs/cesium/1.95.0/";
+
     const link = document.createElement("link");
     link.rel = "stylesheet";
     link.href =
@@ -80,23 +145,18 @@ const CesiumMap = () => {
       "https://cdnjs.cloudflare.com/ajax/libs/cesium/1.95.0/Cesium.js";
     script.async = true;
 
-    script.onerror = () => {
-      setError("Failed to load Cesium");
-      setIsLoading(false);
-    };
-    script.onload = async () => {
+    script.onload = () => {
       try {
         const Cesium = window.Cesium;
 
-        Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_ION_TOKEN;
+        Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIxYmU2MDA4My0zMGFmLTQ0NjktOTlmMS00ZTJlZWFhY2U2NDQiLCJpZCI6Mzc5ODE4LCJpYXQiOjE3Njg1ODUxODd9.yuKVx9R7SykP7_3fnVUinQD9reBzEIFxdkl-IaCt_-c";
 
-        // Create viewer with minimal config first
         const viewer = new Cesium.Viewer(cesiumContainer.current, {
           imageryProvider: new Cesium.UrlTemplateImageryProvider({
             url: "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
             credit: "© OpenStreetMap contributors",
           }),
-          terrainProvider: Cesium.createWorldTerrain(), // 👈 current
+          terrainProvider: Cesium.createWorldTerrain(),
           animation: false,
           timeline: false,
           baseLayerPicker: false,
@@ -108,300 +168,321 @@ const CesiumMap = () => {
           selectionIndicator: true,
         });
 
-        // Configure scene
-        viewer.scene.globe.show = true;
-        viewer.scene.globe.enableLighting = false;
-        viewer.scene.backgroundColor = Cesium.Color.DARK_BLUE;
-
         viewerRef.current = viewer;
-        cesiumReadyRef.current = true;
 
-        // ✅ Add OSM 3D buildings
-        try {
-          const osmBuildings = Cesium.createOsmBuildings();
-          viewer.scene.primitives.add(osmBuildings);
-          console.log("OSM buildings loaded");
-        } catch (e) {
-          console.error("Failed to load OSM buildings:", e);
-        }
-        
-        let selectedFeature = null;
-        let originalColor = null;
+        // 1️⃣ Set camera HIGH first (terrain needs this)
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(
+            77.5946,
+            12.9716,
+            150000 // IMPORTANT
+          ),
+        });
+
+        // 2️⃣ Add OSM buildings AFTER camera
+        const osmBuildings = Cesium.createOsmBuildings();
+        viewer.scene.primitives.add(osmBuildings);
+
+        // 3️⃣ Only NOW enable depth testing
+        viewer.scene.globe.depthTestAgainstTerrain = true;
+
+        // ---------- EVENTS ----------
+        const pickSurface = (x, y) => {
+          const Cesium = window.Cesium;
+          const cart = viewer.scene.pickPosition(new Cesium.Cartesian2(x, y));
+          if (cart) return cart;
+
+          // Fallback to ellipsoid if sky or no depth
+          return viewer.camera.pickEllipsoid(new Cesium.Cartesian2(x, y));
+        };
 
         const handler = new Cesium.ScreenSpaceEventHandler(
           viewer.scene.canvas
         );
+        handlerRef.current = handler;
 
         handler.setInputAction((movement) => {
-        const Cesium = window.Cesium;
-        if (rectDeleteModeRef.current || rectRestoreModeRef.current) {
-          return;
-        }
+          if (!operationRef.current || methodRef.current !== "CLICK") return;
 
-        // 🔵 RESTORE MODE — DOES NOT REQUIRE PICKED BUILDING
-        if (restoreModeRef.current) {
-          const cartesian = viewer.scene.pickPosition(movement.position);
-          if (!Cesium.defined(cartesian)) {
-            console.warn("No depth at click position");
+          const Cesium = window.Cesium;
+          const picked = viewer.scene.pick(movement.position);
+
+          // DELETE needs a picked feature
+          if (operationRef.current === "DELETE") {
+            if (!(picked instanceof Cesium.Cesium3DTileFeature)) return;
+
+            const cartesian = viewer.scene.pickPosition(movement.position);
+            if (!cartesian) return;
+
+            picked.show = false;
+
+            deletedFeaturesRef.current.add({
+              feature: picked,
+              position: Cesium.Cartographic.fromCartesian(cartesian),
+            });
+            setDeletedCount(deletedFeaturesRef.current.size);
+          }
+
+          // RESTORE does NOT need picking
+          if (operationRef.current === "RESTORE") {
+            const Cesium = window.Cesium;
+
+            const ray = viewer.camera.getPickRay(movement.position);
+            const cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+            if (!cartesian) return;
+
+            const clicked = Cesium.Cartographic.fromCartesian(cartesian);
+
+            let closest = null;
+            let minDist = Infinity;
+
+            deletedFeaturesRef.current.forEach((item) => {
+              const dLat = item.position.latitude - clicked.latitude;
+              const dLon = item.position.longitude - clicked.longitude;
+              const dist = dLat * dLat + dLon * dLon;
+
+              if (dist < minDist) {
+                minDist = dist;
+                closest = item;
+              }
+            });
+
+            if (!closest) return;
+
+            closest.feature.show = true;
+            deletedFeaturesRef.current.delete(closest);
+            setDeletedCount(deletedFeaturesRef.current.size);
+          }
+
+        }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+        // PREVIEW DURING DRAG
+        handler.setInputAction((movement) => {
+          if (modeRef.current !== "INTERACTIVE" || !isSelectingRef.current || !dragStartRef.current) return;
+          
+          const Cesium = window.Cesium;
+          const end = movement.endPosition;
+
+          const minX = Math.min(dragStartRef.current.x, end.x);
+          const maxX = Math.max(dragStartRef.current.x, end.x);
+          const minY = Math.min(dragStartRef.current.y, end.y);
+          const maxY = Math.max(dragStartRef.current.y, end.y);
+
+          const tlCartesian = pickSurface(minX, minY);
+          const brCartesian = pickSurface(maxX, maxY);
+
+          if (!tlCartesian || !brCartesian) return;
+
+          const tlc = Cesium.Cartographic.fromCartesian(tlCartesian);
+          const brc = Cesium.Cartographic.fromCartesian(brCartesian);
+
+          const minLon = Cesium.Math.toDegrees(Math.min(tlc.longitude, brc.longitude));
+          const minLat = Cesium.Math.toDegrees(Math.min(tlc.latitude, brc.latitude));
+          const maxLon = Cesium.Math.toDegrees(Math.max(tlc.longitude, brc.longitude));
+          const maxLat = Cesium.Math.toDegrees(Math.max(tlc.latitude, brc.latitude));
+
+          const rect = Cesium.Rectangle.fromDegrees(
+            minLon,
+            minLat,
+            maxLon,
+            maxLat
+          );
+
+          // Update or create preview rectangle
+          previewRectRef.current = rect;
+
+          if (!previewEntityRef.current) {
+            previewEntityRef.current = viewer.entities.add({
+              rectangle: {
+                coordinates: new Cesium.CallbackProperty(() => {
+                  return previewRectRef.current;
+                }, false),
+                material: Cesium.Color.CYAN.withAlpha(0.25),
+                outline: true,
+                outlineColor: Cesium.Color.CYAN,
+                outlineWidth: 2,
+              },
+            });
+          }
+        }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+        // START SELECTION
+        handler.setInputAction((movement) => {
+          if (
+            methodRef.current === "AREA" &&
+            operationRef.current &&
+            selectedBBoxRef.current
+          ) {
+            areaDragStartRef.current = movement.position;
             return;
           }
 
-          const clicked = Cesium.Cartographic.fromCartesian(cartesian);
+          if (modeRef.current !== "INTERACTIVE") return;
+          if (selectedBBoxRef.current) return;
+          if (isSelectingRef.current) return;
 
-          let closest = null;
-          let minDist = Infinity;
+          isSelectingRef.current = true;
+          dragStartRef.current = movement.position;
+        }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
 
-          deletedFeaturesRef.current.forEach((item) => {
-            const dLat = item.position.latitude - clicked.latitude;
-            const dLon = item.position.longitude - clicked.longitude;
-            const dist = dLat * dLat + dLon * dLon;
+        // END SELECTION
+        handler.setInputAction((movement) => {
+          if (areaDragStartRef.current && selectedBBoxRef.current) {
+            const start = areaDragStartRef.current;
+            const end = movement.position;
+            areaDragStartRef.current = null;
 
-            if (dist < minDist) {
-              minDist = dist;
-              closest = item;
-            }
-          });
+            const minX = Math.min(start.x, end.x);
+            const maxX = Math.max(start.x, end.x);
+            const minY = Math.min(start.y, end.y);
+            const maxY = Math.max(start.y, end.y);
 
-          if (closest) {
-            closest.feature.show = true;
-            deletedFeaturesRef.current.delete(closest);
-            console.log("♻️ Restored building");
-          }
+            const step = 20; // sampling resolution
+            const affected = new WeakSet();
 
-          return;
-        }
+            for (let x = minX; x <= maxX; x += step) {
+              for (let y = minY; y <= maxY; y += step) {
+                const picked = viewer.scene.pick(new Cesium.Cartesian2(x, y));
+                if (!(picked instanceof Cesium.Cesium3DTileFeature)) continue;
+                if (affected.has(picked)) continue;
 
-        // ⬇️ BELOW THIS POINT WE NEED A BUILDING
-        const pickedObject = viewer.scene.pick(movement.position);
+                affected.add(picked);
 
-        if (
-          !Cesium.defined(pickedObject) ||
-          !(pickedObject instanceof Cesium.Cesium3DTileFeature)
-        ) {
-          return;
-        }
+                if (operationRef.current === "DELETE") {
+                  if (picked.show !== false) {
+                    picked.show = false;
 
-        // 🔴 DELETE MODE
-        if (delRef.current) {
-          const cartesian = viewer.scene.pickPosition(movement.position);
-          if (!Cesium.defined(cartesian)) return;
+                    const cart = viewer.scene.pickPosition(
+                      new Cesium.Cartesian2(x, y)
+                    );
+                    if (cart) {
+                      deletedFeaturesRef.current.add({
+                        feature: picked,
+                        position: Cesium.Cartographic.fromCartesian(cart),
+                      });
+                    }
+                  }
+                }
 
-          pickedObject.show = false;
-          deletedFeaturesRef.current.add({
-            feature: pickedObject,
-            position: Cesium.Cartographic.fromCartesian(cartesian),
-          });
-
-          console.log("🗑️ Building deleted");
-          return;
-        }
-
-        // 🟡 NORMAL SELECT MODE
-        if (selectedFeature && selectedFeature !== pickedObject) {
-          selectedFeature.color = originalColor;
-        }
-
-        selectedFeature = pickedObject;
-        originalColor = Cesium.Color.clone(pickedObject.color);
-        pickedObject.color = Cesium.Color.YELLOW;
-
-      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-
-
-      let dragStart = null;
-      let dragEnd = null;
-
-      handler.setInputAction((movement) => {
-      if (!rectDeleteModeRef.current && !rectRestoreModeRef.current) return;
-
-      dragStart = {
-        x: movement.position.x,
-        y: movement.position.y,
-      };
-
-      setDragRect({
-        left: dragStart.x,
-        top: dragStart.y,
-        width: 0,
-        height: 0,
-      });
-    }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
-
-    handler.setInputAction((movement) => {
-      if (!dragStart) return;
-
-      const end = movement.endPosition;
-
-      const left = Math.min(dragStart.x, end.x);
-      const top = Math.min(dragStart.y, end.y);
-      const width = Math.abs(end.x - dragStart.x);
-      const height = Math.abs(end.y - dragStart.y);
-
-      setDragRect({ left, top, width, height });
-    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
-
-      handler.setInputAction((movement) => {
-        if (!dragStart) return;
-
-        dragEnd = {
-          x: movement.position.x,
-          y: movement.position.y,
-        };
-
-        const minX = Math.min(dragStart.x, dragEnd.x);
-        const maxX = Math.max(dragStart.x, dragEnd.x);
-        const minY = Math.min(dragStart.y, dragEnd.y);
-        const maxY = Math.max(dragStart.y, dragEnd.y);
-
-        const pickedHits = [];
-
-        // 🔥 adaptive sampling step (KEY OPTIMIZATION)
-        const rectAreaPx = (maxX - minX) * (maxY - minY);
-        const step =
-          rectAreaPx > 400_000 ? 30 :
-          rectAreaPx > 200_000 ? 20 :
-          10;
-
-        for (let x = minX; x <= maxX; x += step) {
-          for (let y = minY; y <= maxY; y += step) {
-            const picked = viewer.scene.pick({ x, y });
-
-            if (
-              Cesium.defined(picked) &&
-              picked instanceof Cesium.Cesium3DTileFeature
-            ) {
-              pickedHits.push({ feature: picked, x, y });
-            }
-          }
-}
-
-        // 🔴 RECTANGLE DELETE
-        if (rectDeleteModeRef.current) {
-          const seen = new WeakSet(); // 🔥 prevents repeat work
-
-          pickedHits.forEach(({ feature, x, y }) => {
-            if (seen.has(feature)) return;
-            seen.add(feature);
-
-            if (feature.show !== false) {
-              feature.show = false;
-
-              const cartesian = viewer.scene.pickPosition({ x, y });
-              if (Cesium.defined(cartesian)) {
-                deletedFeaturesRef.current.add({
-                  feature,
-                  position: Cesium.Cartographic.fromCartesian(cartesian),
-                });
+                if (operationRef.current === "RESTORE") {
+                  if (picked.show === false) {
+                    picked.show = true;
+                    [...deletedFeaturesRef.current].forEach(item => {
+                      if (item.feature === picked) {
+                        deletedFeaturesRef.current.delete(item);
+                      }
+                    });
+                  }
+                }
               }
             }
-          });
-        }
+            setDeletedCount(deletedFeaturesRef.current.size);
+            const c = viewer.scene.screenSpaceCameraController;
+            c.enableRotate = true;
+            c.enableTranslate = true;
+            c.enableZoom = true;
+            c.enableTilt = true;
+            c.enableLook = true;
 
-        // 🟢 RECTANGLE RESTORE
-        if (rectRestoreModeRef.current) {
-          const restored = [];
+            return;
+          }
+          //-------------------------------------
+          if (!isSelectingRef.current || !dragStartRef.current) return;
 
-          deletedFeaturesRef.current.forEach((item) => {
-            const cartesian = Cesium.Cartesian3.fromRadians(
-              item.position.longitude,
-              item.position.latitude,
-              item.position.height
-            );
+          const Cesium = window.Cesium;
+          const end = movement.position;
 
-            const screenPos = Cesium.SceneTransforms.wgs84ToWindowCoordinates(
-              viewer.scene,
-              cartesian
-            );
+          const minX = Math.min(dragStartRef.current.x, end.x);
+          const maxX = Math.max(dragStartRef.current.x, end.x);
+          const minY = Math.min(dragStartRef.current.y, end.y);
+          const maxY = Math.max(dragStartRef.current.y, end.y);
 
-            if (!screenPos) return;
+          const tlCartesian = pickSurface(minX, minY);
+          const brCartesian = pickSurface(maxX, maxY);
 
-            if (
-              screenPos.x >= minX &&
-              screenPos.x <= maxX &&
-              screenPos.y >= minY &&
-              screenPos.y <= maxY
-            ) {
-              item.feature.show = true;
-              restored.push(item);
+
+          if (!tlCartesian || !brCartesian) {
+            isSelectingRef.current = false;
+            dragStartRef.current = null;
+            if (previewEntityRef.current) {
+              viewer.entities.remove(previewEntityRef.current);
+              previewEntityRef.current = null;
             }
-          });
+            return;
+          }
 
-          restored.forEach((item) =>
-            deletedFeaturesRef.current.delete(item)
-          );
+          const tlc = Cesium.Cartographic.fromCartesian(tlCartesian);
+          const brc = Cesium.Cartographic.fromCartesian(brCartesian);
 
-          console.log(`♻️ Rectangle restored ${restored.length} buildings`);
-        }
+          const bbox = {
+            minLat: Cesium.Math.toDegrees(
+              Math.min(tlc.latitude, brc.latitude)
+            ),
+            maxLat: Cesium.Math.toDegrees(
+              Math.max(tlc.latitude, brc.latitude)
+            ),
+            minLon: Cesium.Math.toDegrees(
+              Math.min(tlc.longitude, brc.longitude)
+            ),
+            maxLon: Cesium.Math.toDegrees(
+              Math.max(tlc.longitude, brc.longitude)
+            ),
+          };
 
+          console.log("📦 Selected BBox:", bbox);
 
-        dragStart = null;
-        dragEnd = null;
-        setDragRect(null);
+          setSelectedBBox(bbox);
+          isSelectingRef.current = false;
+          dragStartRef.current = null;
 
-      }, Cesium.ScreenSpaceEventType.LEFT_UP);
+          // Remove preview
+          if (previewEntityRef.current) {
+            viewer.entities.remove(previewEntityRef.current);
+            previewEntityRef.current = null;
+          }
 
+          // Add final selection rectangle
+          selectionEntityRef.current = createGroundRectanglePrimitive(viewer, bbox);
 
+          // Lock camera but allow zoom
+          setMode("VIEW");
+          const controller = viewer.scene.screenSpaceCameraController;
+          controller.enableInputs = true;
+          
+          if (previewEntityRef.current) {
+            viewer.entities.remove(previewEntityRef.current);
+            previewEntityRef.current = null;
+            previewRectRef.current = null;
+          }
+        }, Cesium.ScreenSpaceEventType.LEFT_UP);
 
-        // ✅ Zoom to Bengaluru with safe altitude
-        const destination = Cesium.Cartesian3.fromDegrees(77.5946, 12.9716, 50000);
         viewer.camera.setView({
-          destination: destination,
-          orientation: {
-            heading: 0,
-            pitch: Cesium.Math.toRadians(-45),
-            roll: 0,
-          },
+          destination: Cesium.Cartesian3.fromDegrees(77.5946, 12.9716, 50000),
         });
+
+        viewer.scene.globe.depthTestAgainstTerrain = true;
 
         setIsLoading(false);
       } catch (e) {
-        console.error("Cesium init error:", e);
-        setError("Cesium init failed: " + e.message);
-        setIsLoading(false);
+        setError(e.message);
       }
     };
 
     document.body.appendChild(script);
 
     return () => {
-      if (viewerRef.current && !viewerRef.current.isDestroyed()) {
-        viewerRef.current.destroy();
-      }
-      document.head.removeChild(link);
-      document.body.removeChild(script);
+      if (handlerRef.current) handlerRef.current.destroy();
+      if (viewerRef.current) viewerRef.current.destroy();
+      if (link.parentNode) document.head.removeChild(link);
+      if (script.parentNode) document.body.removeChild(script);
     };
   }, []);
 
-  const restoreAll = () => {
-    deletedFeaturesRef.current.forEach((item) => {
-      item.feature.show = true;
-    });
-    deletedFeaturesRef.current.clear();
-  };
-
-  const flyToLocation = (lon, lat, height = 3000) => {
-    if (!viewerRef.current || !window.Cesium) return;
-
-    viewerRef.current.camera.flyTo({
-      destination: window.Cesium.Cartesian3.fromDegrees(
-        lon,
-        lat,
-        height
-      ),
-      orientation: {
-        heading: 0,
-        pitch: window.Cesium.Math.toRadians(-45),
-        roll: 0,
-      },
-      duration: 1.5,
-    });
-  };
-
+  // ---------- UI ----------
   if (error) {
     return (
-      <div className="w-full h-screen flex items-center justify-center bg-gray-900 text-white">
-        <AlertCircle className="w-10 h-10 text-red-500 mr-3" />
-        {error}
+      <div className="w-full h-screen flex items-center justify-center bg-black text-white">
+        <AlertCircle className="mr-2" /> {error}
       </div>
     );
   }
@@ -409,95 +490,143 @@ const CesiumMap = () => {
   return (
     <div className="w-full h-screen relative">
       {isLoading && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-gray-900">
-          <div className="text-white flex items-center gap-3">
-            <Globe className="animate-spin" />
-            Loading 3D Map…
-          </div>
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black text-white">
+          <Globe className="animate-spin mr-2" /> Loading…
         </div>
       )}
 
-      {dragRect && (
-        <div
-          style={{
-            position: "absolute",
-            left: dragRect.left,
-            top: dragRect.top,
-            width: dragRect.width,
-            height: dragRect.height,
-            border: "2px dashed #00ffff",
-            backgroundColor: "rgba(0, 255, 255, 0.15)",
-            pointerEvents: "none",
-            zIndex: 1000,
-          }}
-        />
-      )}
-
       <div ref={cesiumContainer} className="w-full h-full" />
+      
+      {/* Status indicator */}
+      <div className="absolute top-4 right-4 z-10 bg-black/80 text-white px-4 py-2 rounded-lg font-mono text-sm">
+        {mode === "INTERACTIVE" && !selectedBBox && "🟦 Interactive Mode: Draw area"}
+        {mode === "VIEW" && selectedBBox && "🟩 Area selected"}
+        {mode === "VIEW" && !selectedBBox && "🗺️ View mode"}
+      </div>
 
-      <div className="absolute top-4 left-4 z-10 space-y-2">
-        <button
-          onClick={() => flyToLocation(77.5946, 12.9716)}
-          className="px-4 py-2 bg-white rounded shadow flex items-center gap-2"
-        >
-          <Home className="w-4 h-4" />
-          Bengaluru
-        </button>
-
-        <button
-          onClick={() => flyToLocation(-74.006, 40.7128)}
-          className="px-4 py-2 bg-white rounded shadow flex items-center gap-2"
-        >
-          <MapPin className="w-4 h-4" />
-          New York
-        </button>
-
+      {/* Control buttons */}
+      <div className="absolute top-4 left-4 z-20 flex flex-col gap-2">
         <button
           onClick={() => {
-            setDel(!del);
-            setRestoreMode(false);
+            if (selectedBBox) {
+              clearSelection();
+            }
+            setMode("INTERACTIVE");
+
+            if (viewerRef.current) {
+              const controller = viewerRef.current.scene.screenSpaceCameraController;
+              controller.enableInputs = true;
+              controller.enableTranslate = false;
+              controller.enableRotate = false;
+              controller.enableTilt = false;
+              controller.enableLook = false;
+              controller.enableZoom = true;
+            }
+          }}
+          disabled={mode === "INTERACTIVE" && !selectedBBox}
+          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-colors"
+        >
+          Interactive Mode
+        </button>
+
+        <button 
+          onClick={clearSelection}
+          disabled={!selectedBBox}
+          className="bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-colors"
+        >
+          Clear Selection
+        </button>
+
+        {/* DELETE */}
+        <button
+          disabled={!selectedBBox}
+          onClick={() => {  
+            setOperation("DELETE");
+            setMethod("CLICK");
           }}
         >
-          Delete Mode: {del ? "On" : "Off"}
+          Delete (Click)
         </button>
 
         <button
+          disabled={!selectedBBox}
           onClick={() => {
-            setRestoreMode(!restoreMode);
-            setDel(false);
+            setOperation("DELETE");
+            setMethod("AREA");
+            setMode("INTERACTIVE");
+
+            const c = viewerRef.current.scene.screenSpaceCameraController;
+            c.enableRotate = false;
+            c.enableTranslate = false;
+            c.enableZoom = false;
+            c.enableTilt = false;
+            c.enableLook = false;
           }}
         >
-          Restore Mode: {restoreMode ? "On" : "Off"}
+          Delete (Area)
+        </button>
+
+
+        {/* RESTORE */}
+        <button
+          disabled={deletedCount === 0}
+          onClick={() => {
+            setOperation("RESTORE");
+            setMethod("CLICK");
+          }}
+        >
+          Restore (Click)
         </button>
 
         <button
-          onClick={restoreAll}
-          className="px-4 py-2 bg-white rounded shadow flex items-center gap-2"
-        >
-          Restore All
-        </button>
-        <button
+          disabled={deletedFeaturesRef.current.size === 0}
           onClick={() => {
-            setRectDeleteMode(!rectDeleteMode);
-            setRectRestoreMode(false);
-            setDel(false);
-            setRestoreMode(false);
+            setOperation("RESTORE");
+            setMethod("AREA");
+            setMode("INTERACTIVE");
+
+            const c = viewerRef.current.scene.screenSpaceCameraController;
+            c.enableRotate = false;
+            c.enableTranslate = false;
+            c.enableZoom = false;
+            c.enableTilt = false;
+            c.enableLook = false;
           }}
         >
-          Rectangle Delete: {rectDeleteMode ? "On" : "Off"}
+          Restore (Area)
         </button>
 
-        <button
+        <button 
           onClick={() => {
-            setRectRestoreMode(!rectRestoreMode);
-            setRectDeleteMode(false);
-            setDel(false);
-            setRestoreMode(false);
+            setMode("VIEW");
+            if (viewerRef.current) {
+              const controller = viewerRef.current.scene.screenSpaceCameraController;
+              if (selectedBBox) {
+                controller.enableTranslate = false;
+                controller.enableRotate = false;
+                controller.enableTilt = false;
+                controller.enableLook = false;
+                controller.enableZoom = true;
+              } else {
+                controller.enableInputs = true;
+              }
+            }
           }}
+          disabled={mode === "VIEW"}
+          className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-colors"
         >
-          Rectangle Restore: {rectRestoreMode ? "On" : "Off"}
+          View Mode
         </button>
       </div>
+
+      {/* Selected bbox info */}
+      {selectedBBox && (
+        <div className="absolute bottom-4 left-4 z-10 bg-black/80 text-white px-4 py-3 rounded-lg font-mono text-xs max-w-sm">
+          <div className="font-bold mb-1">Selected Area:</div>
+          <div>Lat: {selectedBBox.minLat.toFixed(6)} to {selectedBBox.maxLat.toFixed(6)}</div>
+          <div>Lon: {selectedBBox.minLon.toFixed(6)} to {selectedBBox.maxLon.toFixed(6)}</div>
+        </div>
+      )}
     </div>
   );
 };
