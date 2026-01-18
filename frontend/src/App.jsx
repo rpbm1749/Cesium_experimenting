@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Globe, AlertCircle } from "lucide-react";
+import { analyzeBBox } from "./api/analysis";
 
 const CesiumMap = () => {
   const cesiumContainer = useRef(null);
@@ -7,6 +8,7 @@ const CesiumMap = () => {
   const handlerRef = useRef(null);
   const previewRectRef = useRef(null);
   const areaDragStartRef = useRef(null);
+  const [analysisResult, setAnalysisResult] = useState(null);
   const [operation, setOperation] = useState(null); 
   // "DELETE" | "RESTORE" | null
   const [deletedCount, setDeletedCount] = useState(0);
@@ -40,7 +42,6 @@ const CesiumMap = () => {
   const dragStartRef = useRef(null);
 
   // DELETE
-  const [deleteMode, setDeleteMode] = useState(false);
   const deletedFeaturesRef = useRef(new Set());
 
   // PREVIEW
@@ -149,8 +150,7 @@ const CesiumMap = () => {
       try {
         const Cesium = window.Cesium;
 
-        Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIxYmU2MDA4My0zMGFmLTQ0NjktOTlmMS00ZTJlZWFhY2U2NDQiLCJpZCI6Mzc5ODE4LCJpYXQiOjE3Njg1ODUxODd9.yuKVx9R7SykP7_3fnVUinQD9reBzEIFxdkl-IaCt_-c";
-
+        Cesium.Ion.defaultAccessToken = import.meta.env.VITE_CESIUM_ION_TOKEN;
         const viewer = new Cesium.Viewer(cesiumContainer.current, {
           imageryProvider: new Cesium.UrlTemplateImageryProvider({
             url: "https://a.tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -317,17 +317,24 @@ const CesiumMap = () => {
             return;
           }
 
-          if (modeRef.current !== "INTERACTIVE") return;
-          if (selectedBBoxRef.current) return;
-          if (isSelectingRef.current) return;
-
-          isSelectingRef.current = true;
-          dragStartRef.current = movement.position;
+          if (
+            modeRef.current === "INTERACTIVE" &&
+            !selectedBBoxRef.current &&
+            !isSelectingRef.current
+          ) {
+            isSelectingRef.current = true;
+            dragStartRef.current = movement.position; 
+          }
         }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
 
         // END SELECTION
         handler.setInputAction((movement) => {
-          if (areaDragStartRef.current && selectedBBoxRef.current) {
+          if (
+            areaDragStartRef.current &&
+            selectedBBoxRef.current &&
+            methodRef.current === "AREA" &&
+            operationRef.current
+          ) {
             const start = areaDragStartRef.current;
             const end = movement.position;
             areaDragStartRef.current = null;
@@ -432,6 +439,15 @@ const CesiumMap = () => {
           console.log("📦 Selected BBox:", bbox);
 
           setSelectedBBox(bbox);
+          analyzeBBox(bbox)
+          .then((data) => {
+            setAnalysisResult(data);
+          })
+          .catch((err) => {
+            console.error(err);
+          });
+
+          console.log("📦 BBox being sent:", bbox);
           isSelectingRef.current = false;
           dragStartRef.current = null;
 
@@ -553,7 +569,7 @@ const CesiumMap = () => {
           onClick={() => {
             setOperation("DELETE");
             setMethod("AREA");
-            setMode("INTERACTIVE");
+            setMode("VIEW");
 
             const c = viewerRef.current.scene.screenSpaceCameraController;
             c.enableRotate = false;
@@ -583,7 +599,7 @@ const CesiumMap = () => {
           onClick={() => {
             setOperation("RESTORE");
             setMethod("AREA");
-            setMode("INTERACTIVE");
+            setMode("VIEW");  
 
             const c = viewerRef.current.scene.screenSpaceCameraController;
             c.enableRotate = false;
@@ -625,6 +641,14 @@ const CesiumMap = () => {
           <div className="font-bold mb-1">Selected Area:</div>
           <div>Lat: {selectedBBox.minLat.toFixed(6)} to {selectedBBox.maxLat.toFixed(6)}</div>
           <div>Lon: {selectedBBox.minLon.toFixed(6)} to {selectedBBox.maxLon.toFixed(6)}</div>
+        </div>
+      )}
+      {analysisResult && (
+        <div className="absolute bottom-4 right-4 bg-black/80 text-white p-4 rounded-lg text-sm w-72">
+          <div className="font-bold mb-2">Analysis</div>
+          <pre className="text-xs whitespace-pre-wrap">
+            {JSON.stringify(analysisResult, null, 2)}
+          </pre>
         </div>
       )}
     </div>

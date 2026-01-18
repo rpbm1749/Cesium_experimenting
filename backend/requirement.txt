@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+geopandas
+osmnx
+shapely
+pyproj
