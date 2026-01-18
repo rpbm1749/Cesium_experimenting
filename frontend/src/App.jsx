@@ -451,6 +451,23 @@ const CesiumMap = () => {
           isSelectingRef.current = false;
           dragStartRef.current = null;
 
+          const centerLon = (bbox.minLon + bbox.maxLon) / 2;
+          const centerLat = (bbox.minLat + bbox.maxLat) / 2;
+          
+          viewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(
+              centerLon,
+              centerLat,
+              1200 // height in meters (adjust)
+            ),
+            orientation: {
+              heading: Cesium.Math.toRadians(0),        // facing north
+              pitch: Cesium.Math.toRadians(-35),        // 🔥 3D tilt
+              roll: 0,
+            },
+            duration: 1.5,
+          });
+
           // Remove preview
           if (previewEntityRef.current) {
             viewer.entities.remove(previewEntityRef.current);
@@ -463,7 +480,10 @@ const CesiumMap = () => {
           // Lock camera but allow zoom
           setMode("VIEW");
           const controller = viewer.scene.screenSpaceCameraController;
-          controller.enableInputs = true;
+          controller.enableTranslate = true;
+          controller.enableZoom = true;
+          controller.enableRotate = true;
+
           
           if (previewEntityRef.current) {
             viewer.entities.remove(previewEntityRef.current);
