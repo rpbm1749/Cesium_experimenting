@@ -34,3 +34,9 @@ __pycache__/
 # Virtual environment
 backend/venv/
 venv/
+
+# Data files
+backend/blr_buildings.geojson
+backend/blr_green.geojson
+backend/blr_industry.geojson
+backend/blr_roads.geojson

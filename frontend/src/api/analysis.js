@@ -1,5 +1,5 @@
 export async function analyzeBBox(bbox) {
-  const res = await fetch("http://127.0.0.1:8000/analyze", {
+  const res = await fetch("http://127.0.0.1:8001/predict", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
