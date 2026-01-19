@@ -1,7 +1,12 @@
 import CesiumMap from "@/components/CesiumMap";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 const Index = () => {
-  return <CesiumMap />;
+  return (
+    <ErrorBoundary>
+      <CesiumMap />
+    </ErrorBoundary>
+  );
 };
 
 export default Index;

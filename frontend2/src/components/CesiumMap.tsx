@@ -176,6 +176,11 @@ const CesiumMap: React.FC = () => {
     script.src = "https://cdnjs.cloudflare.com/ajax/libs/cesium/1.95.0/Cesium.js";
     script.async = true;
 
+    script.onerror = () => {
+      setError("Failed to load CesiumJS script. Please check your internet connection.");
+      setIsLoading(false);
+    };
+
     script.onload = () => {
       try {
         const Cesium = window.Cesium;
@@ -463,7 +468,11 @@ const CesiumMap: React.FC = () => {
       }
     };
 
-    document.body.appendChild(script);
+    if (window.Cesium) {
+        script.onload?.(new Event("load"));
+    } else {
+        document.body.appendChild(script);
+    }
 
     return () => {
       if (handlerRef.current) handlerRef.current.destroy();

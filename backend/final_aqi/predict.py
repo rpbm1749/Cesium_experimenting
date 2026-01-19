@@ -1,170 +1,319 @@
 import os
-import sys
-
-# --- FIX: ADD THIS AT THE VERY TOP ---
-if 'CONDA_PREFIX' in os.environ:
-    # This points to the folder containing the C++ DLLs in your environment
-    bin_path = os.path.join(os.environ['CONDA_PREFIX'], 'Library', 'bin')
-    if os.path.exists(bin_path):
-        os.add_dll_directory(bin_path)
-# --------------------------------------
-
+import json
 import numpy as np
-from scenario_runner import run_scenario
-# It's important to keep these below the DLL fix
-from aqi_model import predict_aqi_with_model, loaded_models, loaded_scaler, AQI_FEATURE_NAMES
+from pathlib import Path
+from shapely.geometry import Polygon
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
+
+import geopandas as gpd
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-import json
-from openai import OpenAI
-from dotenv import load_dotenv
-from pathlib import Path
 
-# Load .env from backend/ directory (parent of current directory)
-env_path = Path(__file__).resolve().parent.parent / '.env'
+from dotenv import load_dotenv
+from openai import AsyncOpenAI
+
+# ================= DLL FIX (Windows + Conda) =================
+if "CONDA_PREFIX" in os.environ:
+    bin_path = os.path.join(os.environ["CONDA_PREFIX"], "Library", "bin")
+    if os.path.exists(bin_path):
+        os.add_dll_directory(bin_path)
+# ============================================================
+
+# ================= LOCAL IMPORTS =================
+from scenario_runner import run_scenario
+from aqi_model import (
+    predict_aqi_with_model,
+    loaded_models,
+    loaded_scaler,
+    AQI_FEATURE_NAMES,
+)
+from sources import (
+    get_building_sources,
+    get_industry_sources,
+    get_green_cover,
+)
+from population import get_population
+# =================================================
+
+# ================= ENV =================
+env_path = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-api_key = os.environ.get("GROQ_API_KEY")
-client = None
-if api_key:
-    client = OpenAI(
-        api_key=api_key,
-        base_url="https://api.groq.com/openai/v1",
-    )
-else:
-    print("WARNING: GROQ_API_KEY not found in environment variables or .env file.")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-def get_simulation_params(user_text):
-    if not client:
-        print("Grok client not initialized (missing API key). Using default parameters.")
-        return None
-
-    prompt = f"""
-    Extract simulation parameters from the following scenario description:
-    "{user_text}"
-    
-    Return a JSON object with two keys: "base" and "future".
-    Each should contain a subset of these keys if mentioned or implied:
-    - pop_growth (float, e.g. 0.02 for 2%)
-    - years (int, duration)
-    - built (float, 0-1, proportion of built-up area)
-    - green (float, 0-1, proportion of green area)
-    
-    Default base: pop_growth=0.0, years=0, built=0.1, green=0.8
-    Default future: pop_growth=0.025, years=15, built=0.8, green=0.1
-    
-    Only return the JSON.
-    """
-    
-    try:
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a helpful assistant that extracts simulation parameters from text and returns valid JSON."
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            model="llama-3.1-8b-instant",
-            response_format={"type": "json_object"},
-        )
-        return json.loads(chat_completion.choices[0].message.content)
-    except Exception as e:
-        print(f"Error calling Groq: {e}")
-        return None
+client = (
+    AsyncOpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+    if GROQ_API_KEY
+    else None
+)
+# =======================================
 
 app = FastAPI(title="AQI Prediction API")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ================= REQUEST MODEL =================
 
 class BBoxRequest(BaseModel):
     minLat: float
     minLon: float
     maxLat: float
     maxLon: float
-    scenario_text: str = None
+    scenario_text: str | None = None
+
+
+# ================= FAST RAW METRICS (CACHED) =================
+
+@lru_cache(maxsize=32)
+def extract_raw_metrics(polygon_wkt: str):
+    """
+    Heavy GIS work is done ONCE per unique polygon.
+    Parallelized to speed up data fetching.
+    """
+
+    coords = json.loads(polygon_wkt)
+    poly = Polygon(coords)
+
+    gdf = gpd.GeoDataFrame([1], geometry=[poly], crs="EPSG:4326")
+    gdf_utm = gdf.to_crs(epsg=32643)
+
+    area_m2 = gdf_utm.geometry.area.iloc[0]
+    
+    # Prepare arguments for parallel execution
+    geom_interface = gdf.__geo_interface__
+    geom_utm = gdf_utm.geometry.iloc[0]
+
+    with ThreadPoolExecutor() as executor:
+        future_pop = executor.submit(get_population, geom_interface)
+        future_bld = executor.submit(get_building_sources, geom_utm, {"pm2_5": 0})
+        future_ind = executor.submit(get_industry_sources, geom_utm)
+        future_grn = executor.submit(get_green_cover, geom_utm)
+        
+        # Gather results
+        population = future_pop.result()
+        buildings = future_bld.result()
+        industries = future_ind.result()
+        green = future_grn.result()
+
+    green_area = green.geometry.area.sum() if not green.empty else 0.0
+
+    return {
+        "area_m2": float(area_m2),
+        "population": int(population),
+        "num_buildings": len(buildings),
+        "building_area_m2": len(buildings) * 120.0,  # assumption
+        "num_industries": len(industries),
+        "green_area_m2": float(green_area),
+    }
+
+
+# ================= GROQ INTERPRETER =================
+
+async def get_simulation_params(user_text: str, raw: dict):
+    if not client:
+        return None
+
+    prompt = f"""You are an expert urban environmental planning assistant. Analyze the data and scenario below.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CURRENT URBAN DATA:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Total Area: {raw['area_m2']:,} m²
+- Population: {raw['population']:,} people
+- Number of Buildings: {raw['num_buildings']}
+- Total Building Footprint: {raw['building_area_m2']:,} m²
+- Industrial Facilities: {raw['num_industries']}
+- Green/Park Area: {raw['green_area_m2']:,} m²
+
+CALCULATED RATIOS:
+- Built Coverage: {(raw['building_area_m2']/raw['area_m2']*100):.1f}%
+- Green Coverage: {(raw['green_area_m2']/raw['area_m2']*100):.1f}%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR TASKS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TASK 1 - BASELINE NORMALIZATION:
+Convert current data to normalized values (0.0 to 1.0 scale):
+- "built": Built area ratio (building_area ÷ total_area)
+- "green": Green area ratio (green_area ÷ total_area)
+- "pop_growth": Must be 0.0 (no growth yet)
+- "years": Must be 0 (current state)
+
+TASK 2 - FUTURE SCENARIO PROJECTION:
+Apply this development scenario to the future state:
+"{user_text}"
+
+INTERPRETATION GUIDELINES:
+
+🌳 GREEN SPACE CHANGES:
+- "add parks" / "more green" / "plant trees" → INCREASE green by 0.15-0.35
+- "small green addition" → INCREASE green by 0.08-0.15
+- "major greening" / "urban forest" → INCREASE green by 0.30-0.50
+- When green increases, built MUST decrease by same amount (conservation of space)
+
+🏢 BUILDING/DEVELOPMENT CHANGES:
+- "demolish buildings" / "reduce density" → DECREASE built by 0.10-0.25
+- "new development" / "more buildings" → INCREASE built by 0.15-0.30
+- "high-rise development" → INCREASE built by 0.20-0.40
+- When built increases, green typically decreases
+
+👥 POPULATION CHANGES:
+- No mention of population → USE 0.015 (moderate growth baseline)
+- "slow growth" / "stable" → 0.005-0.010
+- "growing" / "expansion" → 0.015-0.025
+- "rapid growth" / "boom" → 0.028-0.040
+- "decline" / "shrinking" → -0.005 to -0.015
+
+📅 TIMEFRAME:
+- No timeframe mentioned → USE 15 years
+- "short term" → 5-8 years
+- "medium term" → 10-15 years
+- "long term" → 20-30 years
+
+CRITICAL RULES:
+1. built + green should approximately equal the same total in base and future
+2. If scenario is vague, make MEANINGFUL changes (0.10-0.25 range, not 0.01)
+3. Changes should reflect realistic urban planning (humans don't make tiny 1% changes)
+4. Default assumptions: moderate growth (0.015), 15 years, meaningful interventions
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT (STRICT JSON ONLY):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CRITICAL JSON REQUIREMENTS:
+❌ NO COMMENTS (no // or /* */)
+❌ NO CALCULATIONS (no "0.164 - 0.15", compute the actual number: 0.014)
+❌ NO EXPLANATIONS (only the JSON object)
+✅ ONLY VALID JSON WITH FINAL COMPUTED VALUES
+
+Return ONLY this JSON structure:
+
+{{
+  "base": {{
+    "built": <final computed number 0-1>,
+    "green": <final computed number 0-1>,
+    "pop_growth": 0.0,
+    "years": 0
+  }},
+  "future": {{
+    "built": <final computed number 0-1>,
+    "green": <final computed number 0-1>,
+    "pop_growth": <final computed number -0.02 to 0.04>,
+    "years": <integer 5-30>
+  }}
+}}
+
+CORRECT EXAMPLE:
+{{
+  "base": {{
+    "built": 0.45,
+    "green": 0.22,
+    "pop_growth": 0.0,
+    "years": 0
+  }},
+  "future": {{
+    "built": 0.28,
+    "green": 0.42,
+    "pop_growth": 0.015,
+    "years": 15
+  }}
+}}
+
+WRONG EXAMPLES (DO NOT DO THIS):
+❌ "built": 0.164 - 0.15  (compute it: 0.014)
+❌ "green": 0.051 + 0.15  (compute it: 0.201)
+❌ // This is a comment  (no comments allowed)
+
+Now generate ONLY the valid JSON response with computed final values:"""
+
+    try:
+        res = await client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        return json.loads(res.choices[0].message.content)
+    except Exception as e:
+        print("[Groq ERROR]", e)
+        return None
+
+
+# ================= AQI COMPUTATION =================
 
 def predict_aqi(polygon_coords, base, future):
     wind = {"speed": 3.2, "dir": 240}
-    city_input = "Bengaluru"
-    feature_names = AQI_FEATURE_NAMES
-
-    # Run Base Scenario
-    _, C0_all = run_scenario(polygon_coords, base, wind)
-    current_means = {gas: C0_all[gas].mean() for gas in C0_all}
-
-    # Run Future Scenario
-    _, C1_all = run_scenario(polygon_coords, future, wind)
-    future_means = {gas: C1_all[gas].mean() for gas in C1_all}
-
-    scenarios = [
-        ("Current (Base)", current_means, "current"),
-        ("Future (15 Years)", future_means, "future")
-    ]
-
     results = {}
-    for label, means, key in scenarios:
-        numerical_inputs = {
-            'PM2.5': means.get('pm2_5', 0),
-            'PM10': means.get('pm10', 0),
-            'NO': means.get('no', 0),
-            'NO2': means.get('no2', 0),
-            'NOx': means.get('no', 0) + means.get('no2', 0),
-            'NH3': means.get('nh3', 0),
-            'CO': means.get('co', 0) / 1000.0,
-            'SO2': means.get('so2', 0),
-            'O3': means.get('o3', 0),
-            'Benzene': 6.32,
-            'Toluene': 11.75,
-            'Xylene': 1.0
+
+    for label, params in [("current", base), ("future", future)]:
+        _, C = run_scenario(polygon_coords, params, wind)
+        means = {g: C[g].mean() for g in C}
+
+        inputs = {
+            "PM2.5": means.get("pm2_5", 0),
+            "PM10": means.get("pm10", 0),
+            "NO": means.get("no", 0),
+            "NO2": means.get("no2", 0),
+            "NOx": means.get("no", 0) + means.get("no2", 0),
+            "NH3": means.get("nh3", 0),
+            "CO": means.get("co", 0) / 1000,
+            "SO2": means.get("so2", 0),
+            "O3": means.get("o3", 0),
+            "Benzene": 6.32,
+            "Toluene": 11.75,
+            "Xylene": 1.0,
         }
 
-        predictions = {}
-        # Traditional models
-        for name, model_obj in loaded_models.items():
-            predicted_aqi = predict_aqi_with_model(model_obj, name, numerical_inputs, city_input, feature_names, loaded_scaler)
-            predictions[name] = float(predicted_aqi)
+        preds = {
+            name: float(
+                predict_aqi_with_model(
+                    model,
+                    name,
+                    inputs,
+                    "Bengaluru",
+                    AQI_FEATURE_NAMES,
+                    loaded_scaler,
+                )
+            )
+            for name, model in loaded_models.items()
+        }
 
-        # # Neural Network
-        # nn_predicted_aqi = predict_aqi_with_model(loaded_nn_model, "Neural Network (MLP)", numerical_inputs, city_input, feature_names, loaded_scaler)
-        # predictions["Neural Network (MLP)"] = float(nn_predicted_aqi)
+        avg = float(np.mean(list(preds.values())))
+        status = (
+            "Good" if avg <= 50 else
+            "Satisfactory" if avg <= 100 else
+            "Moderate" if avg <= 200 else
+            "Poor" if avg <= 300 else
+            "Very Poor" if avg <= 400 else
+            "Severe"
+        )
 
-        avg_aqi = np.mean(list(predictions.values())) if predictions else 0
-        
-        if avg_aqi <= 50: status = "Good"
-        elif avg_aqi <= 100: status = "Satisfactory"
-        elif avg_aqi <= 200: status = "Moderate"
-        elif avg_aqi <= 300: status = "Poor"
-        elif avg_aqi <= 400: status = "Very Poor"
-        else: status = "Severe"
-
-        results[key] = {
+        results[label] = {
             "label": label,
-            "means": {k: float(v) for k, v in means.items()},
-            "predictions": predictions,
-            "average_aqi": float(avg_aqi),
-            "status": status
+            "means": means,
+            "predictions": preds,
+            "average_aqi": avg,
+            "status": status,
         }
-    
+
     return results
 
+
+# ================= API ENDPOINT =================
+
 @app.post("/predict")
-def predict_endpoint(bbox: BBoxRequest):
-    
-    print(f"Predicting AQI for BBox: {bbox}")
-    
-    # 1️⃣ Prepare polygon coords
+async def predict_endpoint(bbox: BBoxRequest):
+
     polygon_coords = [
         (bbox.minLon, bbox.minLat),
         (bbox.minLon, bbox.maxLat),
@@ -172,116 +321,51 @@ def predict_endpoint(bbox: BBoxRequest):
         (bbox.maxLon, bbox.minLat),
         (bbox.minLon, bbox.minLat),
     ]
-    print(polygon_coords)
 
-    # print(polygon_coords2)
+    polygon_wkt = json.dumps(polygon_coords)
 
-    # polygon_coords = [
-    #     (77.5730, 12.9180), # min min
-    #     (77.5730, 12.9340), # min max 
-    #     (77.5900, 12.9340), # max max
-    #     (77.5900, 12.9180), 
-    #     (77.5730, 12.9180)
-    # ]   
+    # Run GIS in thread pool to avoid blocking loop
+    loop = asyncio.get_running_loop()
+    raw = await loop.run_in_executor(None, extract_raw_metrics, polygon_wkt)
 
-    # 2️⃣ Define scenarios (defaults)
-    base_params = {"pop_growth": 0.0, "years": 0, "built": 0.1, "green": 0.8}
-    future_params = {"pop_growth": 0.025, "years": 15, "built": 0.8, "green": 0.1}
+    print(
+        f"[SUMMARY] Buildings={raw['num_buildings']} | "
+        f"Industries={raw['num_industries']} | "
+        f"GreenArea={raw['green_area_m2']:.1f} m²"
+    )
 
-    # 2.5️⃣ Override with Grok params if text provided
-    if bbox.scenario_text:
-        print(f"Generating params from text: {bbox.scenario_text}")
-        generated = get_simulation_params(bbox.scenario_text)
-        if generated:
-            if "base" in generated: base_params.update(generated["base"])
-            if "future" in generated: future_params.update(generated["future"])
-            print(f"Generated Params: {generated}")
+    params = await get_simulation_params(bbox.scenario_text or "", raw)
 
-    # 3️⃣ Run AQI Prediction
-    try:
-        results = predict_aqi(polygon_coords, base_params, future_params)
-        print(results)
-        print("SCUCESSS")
-        return {
-            "success": True,
-            "scenarios": results,
-            "simulation_params": {
-                "base": base_params,
-                "future": future_params
+    if not params:
+        return {"success": False, "error": "Groq failed"}
+
+    print(f"\n[GROQ OUTPUT] Base: {params['base']}")
+    print(f"[GROQ OUTPUT] Future: {params['future']}\n")
+
+    results = predict_aqi(
+        polygon_coords,
+        params["base"],
+        params["future"],
+    )
+
+    return {
+        "success": True,
+        "scenarios": results,
+        "simulation_params": params,
+        "raw_context": raw,
+        "metadata": {
+            "city": "Bengaluru",
+            "bbox": {
+                "minLat": bbox.minLat,
+                "maxLat": bbox.maxLat,
+                "minLon": bbox.minLon,
+                "maxLon": bbox.maxLon,
             },
-            "metadata": {
-                "city": "Bengaluru",
-                "bbox": {
-                    "minLat": bbox.minLat,
-                    "minLon": bbox.minLon,
-                    "maxLat": bbox.maxLat,
-                    "maxLon": bbox.maxLon
-                }
-            }
-        }
-    except Exception as e:
-        print(f"Error during AQI prediction: {e}")
-        results= {
-            "current": {
-                "label": "Current (Base)",
-                "means": {
-                "pm2_5": 104.99,
-                "pm10": 120.95,
-                "co": 626.22,
-                "no2": 22.50,
-                "so2": 8.32,
-                "no": 4.41,
-                "nh3": 9.01,
-                "o3": 89.37
-                },
-                "predictions": {
-                "Linear Regression": 185.9,
-                "Decision Tree": 244.0,
-                "Random Forest": 226.39
-                },
-                "average_aqi": 218.76,
-                "status": "Poor"
-            },
-            "future": {
-                "label": "Future (15 Years)",
-                "means": {
-                "pm2_5": 109.39,
-                "pm10": 127.09,
-                "co": 668.42,
-                "no2": 28.63,
-                "so2": 8.63,
-                "no": 5.97,
-                "nh3": 9.04,
-                "o3": 89.37
-                },
-                "predictions": {
-                "Linear Regression": 194.04,
-                "Decision Tree": 244.0,
-                "Random Forest": 238.0
-                },
-                "average_aqi": 244.34,
-                "status": "Poor"
-            }
-        }
+        },
+    }
 
-        return {
-                "success": True,
-                "scenarios": results,
-                "simulation_params": {
-                    "base": base_params,
-                    "future": future_params
-                },
-                "metadata": {
-                    "city": "Bengaluru",
-                    "bbox": {
-                        "minLat": bbox.minLat,
-                        "minLon": bbox.minLon,
-                        "maxLat": bbox.maxLat,
-                        "maxLon": bbox.maxLon
-                    }
-                }
-            }
-        # return {"error": str(e)}
+
+# ================= RUN =================
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)
