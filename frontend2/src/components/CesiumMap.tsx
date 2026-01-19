@@ -7,6 +7,16 @@ import StatusBar from "./dashboard/StatusBar";
 import AnalysisPanel from "./dashboard/AnalysisPanel";
 import LoadingOverlay from "./dashboard/LoadingOverlay";
 import CoordinatesPanel from "./dashboard/CoordinatesPanel";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 declare global {
   interface Window {
@@ -49,7 +59,30 @@ const CesiumMap: React.FC = () => {
     maxLat: number;
     minLon: number;
     maxLon: number;
+    scenario_text?: string;
   } | null>(null);
+  const [showScenarioInput, setShowScenarioInput] = useState(false);
+  const [scenarioText, setScenarioText] = useState("");
+
+  const handleAnalyze = async () => {
+    if (!selectedBBox) return;
+    
+    setShowScenarioInput(false);
+    
+    try {
+      const bboxWithText = { ...selectedBBox, scenario_text: scenarioText };
+      const data = await analyzeBBox(bboxWithText);
+      console.log("Analysis Result:", data);
+      if (data.simulation_params) {
+        console.log("Future Parameters from Grok:", data.simulation_params.future);
+      }
+      setAnalysisResult(data);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message);
+    }
+  };
+
   const selectedBBoxRef = useRef(selectedBBox);
   const selectionEntityRef = useRef<any>(null);
   const isSelectingRef = useRef(false);
@@ -147,7 +180,7 @@ const CesiumMap: React.FC = () => {
       try {
         const Cesium = window.Cesium;
 
-        Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJkYWY3ZjBiZS1jNDQ2LTQzNzEtYTg5YS1hNmRhNzA0YjQyOTIiLCJpZCI6MzgwMzY2LCJpYXQiOjE3Njg3NDU2MzZ9.sOrpGkvhknApJ0eaYavbjfAvqvozs99jmixYtbW5ZzU";
+        Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI3MGFiZmQ2Zi0wOWMzLTRlYmUtOWQ2ZS03YmVjYzFkNDFiNGMiLCJpZCI6MzgwNzYyLCJpYXQiOjE3Njg4MjcxODl9.lnCcj1Zb6gSDhUujeCEL4XU-m6QqMHgY2SnvrT8REvE";
         
         const viewer = new Cesium.Viewer(cesiumContainer.current, {
           imageryProvider: new Cesium.UrlTemplateImageryProvider({
@@ -379,15 +412,9 @@ const CesiumMap: React.FC = () => {
           };
 
           setSelectedBBox(bbox);
-          analyzeBBox(bbox)
-            .then((data) => {
-              console.log("Analysis Result:", data);
-              setAnalysisResult(data);
-            })
-            .catch((err) => console.error(err));
+          setScenarioText("");
+          setShowScenarioInput(true);
           
-          
-
           isSelectingRef.current = false;
           dragStartRef.current = null;
 
@@ -560,6 +587,33 @@ const CesiumMap: React.FC = () => {
         <div className="absolute bottom-4 left-4 z-10">
           <CoordinatesPanel selectedBBox={selectedBBox} />
         </div>
+
+        <Dialog open={showScenarioInput} onOpenChange={setShowScenarioInput}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Scenario Simulation</DialogTitle>
+              <DialogDescription>
+                Describe changes to the area (e.g., "Increase industrial activity by 20%", "Add more green cover").
+                Leave empty to use default parameters.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-4">
+              <Textarea
+                placeholder="Describe your scenario..."
+                value={scenarioText}
+                onChange={(e) => setScenarioText(e.target.value)}
+                className="min-h-[100px]"
+              />
+            </div>
+            <DialogFooter className="sm:justify-between">
+               <Button variant="ghost" onClick={() => clearSelection()}>Cancel</Button>
+               <div className="flex gap-2">
+                 <Button variant="outline" onClick={() => { setScenarioText(""); handleAnalyze(); }}>Skip</Button>
+                 <Button onClick={handleAnalyze}>Analyze</Button>
+               </div>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

@@ -6,6 +6,5 @@ shapely
 pyproj
 numpy
 pandas
-tensorflow
 joblib
 scikit-learn

@@ -17,6 +17,66 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+import json
+from openai import OpenAI
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Load .env from backend/ directory (parent of current directory)
+env_path = Path(__file__).resolve().parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
+
+api_key = os.environ.get("GROQ_API_KEY")
+client = None
+if api_key:
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://api.groq.com/openai/v1",
+    )
+else:
+    print("WARNING: GROQ_API_KEY not found in environment variables or .env file.")
+
+def get_simulation_params(user_text):
+    if not client:
+        print("Grok client not initialized (missing API key). Using default parameters.")
+        return None
+
+    prompt = f"""
+    Extract simulation parameters from the following scenario description:
+    "{user_text}"
+    
+    Return a JSON object with two keys: "base" and "future".
+    Each should contain a subset of these keys if mentioned or implied:
+    - pop_growth (float, e.g. 0.02 for 2%)
+    - years (int, duration)
+    - built (float, 0-1, proportion of built-up area)
+    - green (float, 0-1, proportion of green area)
+    
+    Default base: pop_growth=0.0, years=0, built=0.1, green=0.8
+    Default future: pop_growth=0.025, years=15, built=0.8, green=0.1
+    
+    Only return the JSON.
+    """
+    
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that extracts simulation parameters from text and returns valid JSON."
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model="llama-3.1-8b-instant",
+            response_format={"type": "json_object"},
+        )
+        return json.loads(chat_completion.choices[0].message.content)
+    except Exception as e:
+        print(f"Error calling Groq: {e}")
+        return None
 
 app = FastAPI(title="AQI Prediction API")
 
@@ -33,6 +93,7 @@ class BBoxRequest(BaseModel):
     minLon: float
     maxLat: float
     maxLon: float
+    scenario_text: str = None
 
 def predict_aqi(polygon_coords, base, future):
     wind = {"speed": 3.2, "dir": 240}
@@ -127,6 +188,15 @@ def predict_endpoint(bbox: BBoxRequest):
     base_params = {"pop_growth": 0.0, "years": 0, "built": 0.1, "green": 0.8}
     future_params = {"pop_growth": 0.025, "years": 15, "built": 0.8, "green": 0.1}
 
+    # 2.5️⃣ Override with Grok params if text provided
+    if bbox.scenario_text:
+        print(f"Generating params from text: {bbox.scenario_text}")
+        generated = get_simulation_params(bbox.scenario_text)
+        if generated:
+            if "base" in generated: base_params.update(generated["base"])
+            if "future" in generated: future_params.update(generated["future"])
+            print(f"Generated Params: {generated}")
+
     # 3️⃣ Run AQI Prediction
     try:
         results = predict_aqi(polygon_coords, base_params, future_params)
@@ -135,6 +205,10 @@ def predict_endpoint(bbox: BBoxRequest):
         return {
             "success": True,
             "scenarios": results,
+            "simulation_params": {
+                "base": base_params,
+                "future": future_params
+            },
             "metadata": {
                 "city": "Bengaluru",
                 "bbox": {
@@ -193,6 +267,10 @@ def predict_endpoint(bbox: BBoxRequest):
         return {
                 "success": True,
                 "scenarios": results,
+                "simulation_params": {
+                    "base": base_params,
+                    "future": future_params
+                },
                 "metadata": {
                     "city": "Bengaluru",
                     "bbox": {

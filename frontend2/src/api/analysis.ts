@@ -3,6 +3,7 @@ export interface BBox {
   maxLat: number;
   minLon: number;
   maxLon: number;
+  scenario_text?: string;
 }
 
 export interface PollutantMeans {
@@ -35,6 +36,10 @@ export interface AnalysisResult {
   scenarios: {
     current: AnalysisData;
     future: AnalysisData;
+  };
+  simulation_params?: {
+    base: any;
+    future: any;
   };
   metadata: {
     city: string;
