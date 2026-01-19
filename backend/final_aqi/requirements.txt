@@ -1,0 +1,9 @@
+numpy
+pandas
+geopandas
+osmnx
+tensorflow
+joblib
+requests
+shapely
+scikit-learn
