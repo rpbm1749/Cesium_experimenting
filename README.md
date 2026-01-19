@@ -1,18 +1,69 @@
-# React + Vite
+# 🌆 Urban Air Quality Simulation & AQI Prediction System
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This project is a modular urban air quality simulation framework that integrates physical atmospheric dispersion models with machine learning–based AQI prediction. It allows for the simulation of how changes in population growth, built-up area, and green cover affect air pollution levels.
 
-Currently, two official plugins are available:
+## 📂 Project Structure
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+The project is divided into two main components:
+- **`backend/`**: Contains the AQI prediction logic and dispersion models.
+  - **`final_aqi/`**: The primary backend folder containing the prediction API.
+- **`frontend2/`**: The main frontend application built with React, Vite, and Tailwind CSS.
 
-## React Compiler
+*Note: There is also a `frontend/` folder, but `frontend2/` is the current active version.*
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+---
 
-Note: This will impact Vite dev & build performances.
+## 🚀 Getting Started
 
-## Expanding the ESLint configuration
+### 1️⃣ Backend Setup (AQI Prediction)
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+The backend uses FastAPI and Uvicorn to serve the AQI prediction model.
+
+1.  **Navigate to the backend directory:**
+    ```bash
+    cd backend/final_aqi
+    ```
+2.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  **Run the prediction server:**
+    ```bash
+    uvicorn predict:app --host 0.0.0.0 --port 8001 --reload
+    ```
+    The API will be available at `http://localhost:8001`.
+
+### 2️⃣ Frontend Setup
+
+The frontend is a modern React application.
+
+1.  **Navigate to the frontend directory:**
+    ```bash
+    cd frontend2
+    ```
+2.  **Install dependencies:**
+    ```bash
+    npm install
+    # OR if you use bun
+    bun install
+    ```
+3.  **Run the development server:**
+    ```bash
+    npm run dev
+    ```
+    The application will be available at `http://localhost:8080` (or the port specified by Vite).
+
+---
+
+## 🛠️ Key Features
+
+- **🌬️ Physical Dispersion Modeling**: Implements the **Gaussian Plume Model** for pollutants like PM2.5, PM10, CO, NO₂, and SO₂.
+- **🏙️ Urban Data Integration**: Fetches road networks and land-use data using **OSMnx**.
+- **👥 Population-Driven Emissions**: Uses **WorldPop API** to estimate emissions based on population density.
+- **🤖 ML-Based AQI Prediction**: Uses Random Forest, Gradient Boosting, and Neural Networks to predict AQI categories.
+- **🔮 Scenario Analysis**: Compare current scenarios with future urban expansion projections.
+
+## 🔐 Configuration
+
+If you need to update API keys (like OpenWeatherMap), check the configuration files:
+- Backend: [config.py](file:///c:/Users/ajayr/OneDrive/Documents/ML/El_5/New%20folder/Cesium_experimenting/backend/final_aqi/config.py)
