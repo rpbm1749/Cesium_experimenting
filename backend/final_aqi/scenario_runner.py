@@ -9,7 +9,7 @@ from dispersion import run_dispersion, apply_urban_modifiers
 from config import UTM_EPSG, UNIT_CONV
 import json
 
-def run_scenario(polygon_coords, scenario, wind):
+def run_scenario(polygon_coords, scenario, wind, backgrounds=None):
     poly_wgs = make_valid_polygon(polygon_coords)
 
     gdf = gpd.GeoDataFrame(
@@ -32,8 +32,9 @@ def run_scenario(polygon_coords, scenario, wind):
         }]
     }
 
-    # Get current background
-    backgrounds = get_current_background(centroid.y, centroid.x)
+    # Get current background if not provided
+    if backgrounds is None:
+        backgrounds = get_current_background(centroid.y, centroid.x)
 
     pop = get_population(geojson)
     pop *= (1 + scenario["pop_growth"]) ** scenario["years"]
@@ -49,7 +50,7 @@ def run_scenario(polygon_coords, scenario, wind):
     sources = vehicle_sources + industry_sources
     receptors = build_receptors(poly_utm)
 
-    C_disp = run_dispersion(sources, receptors, wind)
+    C_disp = run_dispersion(sources, receptors, wind, built_frac=scenario["built"])
     C_disp = apply_urban_modifiers(C_disp, scenario["built"], scenario["green"])
 
     # Final concentrations

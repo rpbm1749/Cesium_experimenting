@@ -161,3 +161,6 @@ cache/
 !models/*.csv
 !models/*.h5
 !models/*.pkl
+
+test_models/
+

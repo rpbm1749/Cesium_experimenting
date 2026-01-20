@@ -75,13 +75,12 @@ const MetricCard: React.FC<{
   <div className="metric-card">
     <div className="flex items-start justify-between mb-2">
       <span className="text-muted-foreground">{icon}</span>
-      {trend && trendValue && (
+      {trend && (
         <div className={cn(
           "flex items-center gap-1 text-xs font-medium",
           trend === "up" ? "text-destructive" : "text-success"
         )}>
-          {trend === "up" ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-          {Math.abs(trendValue).toFixed(1)}%
+          {trend === "up" ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
         </div>
       )}
     </div>
@@ -137,11 +136,10 @@ const PollutantGrid: React.FC<{ means: PollutantMeans; futureMeans?: PollutantMe
           <div className="text-xs text-muted-foreground">{formatPollutantName(key)}</div>
           {trend && (
             <div className={cn(
-              "text-xs mt-1 flex items-center justify-center gap-0.5",
+              "text-xs mt-1 flex items-center justify-center",
               trend === "up" ? "text-destructive" : "text-success"
             )}>
-              {trend === "up" ? <TrendingUp className="w-2.5 h-2.5" /> : <TrendingDown className="w-2.5 h-2.5" />}
-              {Math.abs(trendValue).toFixed(0)}%
+              {trend === "up" ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
             </div>
           )}
         </div>
@@ -201,7 +199,7 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ result, selectedBBox }) =
     <div className="glass-panel p-4 w-96 max-h-[calc(100vh-8rem)] overflow-y-auto animate-slide-in-right">
       <div className="flex items-center gap-2 mb-4 pb-3 border-b border-border/50">
         <BarChart3 className="w-5 h-5 text-primary" />
-        <h2 className="font-semibold text-foreground">Air Quality Analysis - {result.metadata.city}</h2>
+        <h2 className="font-semibold text-foreground">Air Quality Analysis</h2>
       </div>
 
       {/* Current Analysis */}
@@ -236,14 +234,14 @@ const AnalysisPanel: React.FC<AnalysisPanelProps> = ({ result, selectedBBox }) =
             <span className="text-sm font-medium text-warning">Projected Change</span>
           </div>
           <p className="text-xs text-muted-foreground">
-            AQI is projected to change by{" "}
+            AQI is projected to change based on the scenario:{" "}
             <span className={cn(
-              "font-mono font-medium",
-              scenarios.future.average_aqi > scenarios.current.average_aqi ? "text-destructive" : "text-success"
+              "font-mono font-medium p-1 rounded-sm",
+              scenarios.future.average_aqi > scenarios.current.average_aqi ? "bg-destructive/20 text-destructive" : "bg-success/20 text-success"
             )}>
-              {((scenarios.future.average_aqi - scenarios.current.average_aqi) / scenarios.current.average_aqi * 100).toFixed(1)}%
-            </span>{" "}
-            over the next 5 yearsbased on the scenario.
+              {scenarios.future.average_aqi > scenarios.current.average_aqi ? <TrendingUp className="inline w-3 h-3 mr-1" /> : <TrendingDown className="inline w-3 h-3 mr-1" />}
+              {scenarios.future.average_aqi > scenarios.current.average_aqi ? "Increasing" : "Decreasing"}
+            </span>
           </p>
         </div>
         

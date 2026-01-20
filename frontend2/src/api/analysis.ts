@@ -48,7 +48,7 @@ export interface AnalysisResult {
 }
 
 export async function analyzeBBox(bbox: BBox): Promise<AnalysisResult> {
-  const response = await fetch("http://localhost:8001/predict", {
+  const response = await fetch("http://localhost:8001/backend-main", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

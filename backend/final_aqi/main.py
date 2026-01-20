@@ -64,28 +64,25 @@ def main():
         print("\nPredicting AQI using loaded models...")
         predictions = {}
 
-        # Traditional models
-        for name, model_obj in loaded_models.items():
+        # Traditional models - only use Linear Regression
+        if 'Linear Regression' in loaded_models:
+            name = 'Linear Regression'
+            model_obj = loaded_models[name]
             predicted_aqi = predict_aqi_with_model(model_obj, name, numerical_inputs, city_input, feature_names, loaded_scaler)
             predictions[name] = predicted_aqi
             print(f"  {name:<25}: {predicted_aqi:.2f}")
 
-        # Neural Network
-        # nn_predicted_aqi = predict_aqi_with_model(loaded_nn_model, "Neural Network (MLP)", numerical_inputs, city_input, feature_names, loaded_scaler)
-        # predictions["Neural Network (MLP)"] = nn_predicted_aqi
-        # print(f"  Neural Network (MLP)     : {nn_predicted_aqi:.2f}")
-
         print("-" * 50)
         print("AQI SUMMARY")
         print("-" * 50)
-        avg_aqi = np.mean(list(predictions.values()))
-        print(f"Average Predicted AQI: {avg_aqi:.2f}")
+        final_aqi = predictions.get('Linear Regression', 0)
+        print(f"Predicted AQI: {final_aqi:.2f}")
         
-        if avg_aqi <= 50: status = "Good"
-        elif avg_aqi <= 100: status = "Satisfactory"
-        elif avg_aqi <= 200: status = "Moderate"
-        elif avg_aqi <= 300: status = "Poor"
-        elif avg_aqi <= 400: status = "Very Poor"
+        if final_aqi <= 50: status = "Good"
+        elif final_aqi <= 100: status = "Satisfactory"
+        elif final_aqi <= 200: status = "Moderate"
+        elif final_aqi <= 300: status = "Poor"
+        elif final_aqi <= 400: status = "Very Poor"
         else: status = "Severe"
         
         print(f"Overall Air Quality Status: {status}")
